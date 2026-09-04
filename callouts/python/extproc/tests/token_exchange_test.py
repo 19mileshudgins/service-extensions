@@ -148,6 +148,13 @@ class TestPassThrough:
 # ---------------------------------------------------------------------------
 
 class TestInboundExchange:
+    def test_agent_user_authorization_header_added(self, svc_inbound):
+        svc_inbound.cache.clear()
+        with patch("requests.post", return_value=_mock_http_response("google-token")):
+            result = svc_inbound.process(
+                _make_callout({"authorization": f"Bearer {_SAMPLE_JWT}"}), _Ctx())
+        assert _mutated_headers(result)["x-goog-agent-user-authorization"] == f"Bearer {_SAMPLE_JWT}"
+
     def test_authorization_header_replaced(self, svc_inbound):
         svc_inbound.cache.clear()
         with patch("requests.post", return_value=_mock_http_response("google-token")):
@@ -166,6 +173,7 @@ class TestInboundExchange:
         assert kwargs["json"]["grantType"] == "urn:ietf:params:oauth:grant-type:token-exchange"
         assert kwargs["json"]["subjectToken"] == _SAMPLE_JWT
         assert kwargs["json"]["subjectTokenType"] == "urn:ietf:params:oauth:token-type:jwt"
+        assert kwargs["json"]["scope"] == "https://www.googleapis.com/auth/cloud-platform"
 
     def test_sts_audience_contains_wif_identifiers(self, svc_inbound):
         svc_inbound.cache.clear()

@@ -113,6 +113,7 @@ class TokenExchangeCallout(callout_server.CalloutServer):
             "subjectTokenType": "urn:ietf:params:oauth:token-type:jwt",
             "requestedTokenType": "urn:ietf:params:oauth:token-type:access_token",
             "audience": audience,
+            "scope": ("https://www.googleapis.com/auth/cloud-platform"),
         }
         
         resp = requests.post("https://sts.googleapis.com/v1/token", json=payload, timeout=10.0)
@@ -143,6 +144,8 @@ class TokenExchangeCallout(callout_server.CalloutServer):
         self._append_header(mutations, "authorization", f"Bearer {new_token}")
 
         if self.mode == "inbound":
+            self._append_header(mutations, "x-goog-agent-user-authorization", f"Bearer {original_token}")
+            
             try:
                 # Signature verification is intentionally skipped: we only extract claims
                 # for downstream audit headers. The token was already validated by STS.
