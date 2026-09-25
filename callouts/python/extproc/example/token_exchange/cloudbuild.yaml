@@ -1,0 +1,15 @@
+# Copyright 2026 Google LLC.
+# Licensed under the Apache License, Version 2.0
+substitutions:
+  _REGION: 'us-central1'
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/token-exchange/token-exchange:latest'
+      - '-f'
+      - 'extproc/example/token_exchange/Dockerfile'
+      - '.'
+images:
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/token-exchange/token-exchange:latest'
