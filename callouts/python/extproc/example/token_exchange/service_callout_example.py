@@ -27,6 +27,7 @@ from envoy.config.core.v3.base_pb2 import HeaderValue, HeaderValueOption
 from envoy.type.v3.http_status_pb2 import StatusCode
 
 _TRUSTED_INBOUND_HEADERS = (
+    "x-goog-agent-user-authorization",
     "x-goog-authenticated-user-email",
     "x-goog-authenticated-user-id",
     "x-original-user-groups",
@@ -131,6 +132,7 @@ class TokenExchangeCallout(callout_server.CalloutServer):
             "subjectTokenType": "urn:ietf:params:oauth:token-type:jwt",
             "requestedTokenType": "urn:ietf:params:oauth:token-type:access_token",
             "audience": audience,
+            "scope": ("https://www.googleapis.com/auth/cloud-platform"),
         }
         
         resp = self.session.post("https://sts.googleapis.com/v1/token", json=payload, timeout=10.0)
@@ -161,6 +163,8 @@ class TokenExchangeCallout(callout_server.CalloutServer):
         self._append_header(mutations, "authorization", f"Bearer {new_token}")
 
         if self.mode == "inbound":
+            self._append_header(mutations, "x-goog-agent-user-authorization", f"Bearer {original_token}")
+            
             email = None
             sub = None
             groups_str = None

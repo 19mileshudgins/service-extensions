@@ -147,6 +147,7 @@ class TestPassThrough:
     def test_no_auth_header(self, svc_inbound):
         result = svc_inbound.process(_make_callout({":path": "/api"}), _Ctx())
         assert not _mutated_headers(result)
+        assert "x-goog-agent-user-authorization" in _removed_headers(result)
         assert "x-goog-authenticated-user-email" in _removed_headers(result)
         assert "x-goog-authenticated-user-id" in _removed_headers(result)
         assert "x-original-user-groups" in _removed_headers(result)
@@ -155,13 +156,13 @@ class TestPassThrough:
         result = svc_inbound.process(
             _make_callout({"authorization": "Basic dXNlcjpwYXNz"}), _Ctx())
         assert not _mutated_headers(result)
-        assert "x-goog-authenticated-user-email" in _removed_headers(result)
+        assert "x-goog-agent-user-authorization" in _removed_headers(result)
 
     def test_bearer_without_token(self, svc_inbound):
         result = svc_inbound.process(
             _make_callout({"authorization": "Bearer"}), _Ctx())
         assert not _mutated_headers(result)
-        assert "x-goog-authenticated-user-email" in _removed_headers(result)
+        assert "x-goog-agent-user-authorization" in _removed_headers(result)
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +170,13 @@ class TestPassThrough:
 # ---------------------------------------------------------------------------
 
 class TestInboundExchange:
+    def test_agent_user_authorization_header_added(self, svc_inbound):
+        svc_inbound.cache.clear()
+        with patch("requests.Session.post", return_value=_mock_http_response("google-token")):
+            result = svc_inbound.process(
+                _make_callout({"authorization": f"Bearer {_SAMPLE_JWT}"}), _Ctx())
+        assert _mutated_headers(result)["x-goog-agent-user-authorization"] == f"Bearer {_SAMPLE_JWT}"
+
     def test_authorization_header_replaced(self, svc_inbound):
         svc_inbound.cache.clear()
         with patch("requests.Session.post", return_value=_mock_http_response("google-token")):
@@ -187,6 +195,7 @@ class TestInboundExchange:
         assert kwargs["json"]["grantType"] == "urn:ietf:params:oauth:grant-type:token-exchange"
         assert kwargs["json"]["subjectToken"] == _SAMPLE_JWT
         assert kwargs["json"]["subjectTokenType"] == "urn:ietf:params:oauth:token-type:jwt"
+        assert kwargs["json"]["scope"] == "https://www.googleapis.com/auth/cloud-platform"
 
     def test_sts_audience_contains_wif_identifiers(self, svc_inbound):
         svc_inbound.cache.clear()
@@ -325,7 +334,7 @@ class TestFailOpen:
             result = svc_inbound.process(
                 _make_callout({"authorization": f"Bearer {_SAMPLE_JWT}"}), _Ctx())
         assert not _mutated_headers(result)
-        assert "x-goog-authenticated-user-email" in _removed_headers(result)
+        assert "x-goog-agent-user-authorization" in _removed_headers(result)
 
     def test_idp_http_error_passes_request_through(self, svc_outbound):
         svc_outbound.cache.clear()
