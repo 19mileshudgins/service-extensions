@@ -24,13 +24,22 @@ from cachetools import TTLCache
 from extproc.service import callout_server
 from envoy.service.ext_proc.v3 import external_processor_pb2 as service_pb2
 from envoy.config.core.v3.base_pb2 import HeaderValue, HeaderValueOption
+from envoy.type.v3.http_status_pb2 import StatusCode
+
+_TRUSTED_INBOUND_HEADERS = (
+    "x-goog-authenticated-user-email",
+    "x-goog-authenticated-user-id",
+    "x-original-user-groups",
+)
 
 
 class TokenExchangeCallout(callout_server.CalloutServer):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.mode = os.environ.get("TOKEN_EXCHANGE_MODE", "inbound").lower()
+        self.fail_closed = os.environ.get("FAIL_CLOSED", "false").lower() in ("true", "1", "yes")
         self.cache = TTLCache(maxsize=10000, ttl=3600)
+        self.session = requests.Session()
         
         self._init_inbound()
         self._init_outbound()
@@ -70,12 +79,18 @@ class TokenExchangeCallout(callout_server.CalloutServer):
                 break
 
         if not auth_header:
-            return service_pb2.ProcessingResponse()
+            if self.fail_closed:
+                logging.warning("Missing Authorization header. Executing Fail-Closed rejection.")
+                return self._deny_response("Missing Authorization header.")
+            return self._passthrough_response()
 
         parts = auth_header.split()
         if len(parts) != 2 or parts[0].lower() != "bearer":
+            if self.fail_closed:
+                logging.warning("Invalid Authorization header format. Executing Fail-Closed rejection.")
+                return self._deny_response("Invalid Authorization header format.")
             logging.debug("Invalid Authorization header format. Passing through.")
-            return service_pb2.ProcessingResponse()
+            return self._passthrough_response()
 
         original_token = parts[1]
         cache_key = hashlib.sha256(original_token.encode("utf-8")).hexdigest()
@@ -100,8 +115,11 @@ class TokenExchangeCallout(callout_server.CalloutServer):
             return self._build_response(new_token, original_token)
 
         except Exception as e:
+            if self.fail_closed:
+                logging.error(f"Exchange failed: {e}. Executing Fail-Closed rejection.")
+                return self._deny_response("Token exchange failed.")
             logging.error(f"Exchange failed: {e}. Executing Fail-Open pass-through.")
-            return service_pb2.ProcessingResponse()
+            return self._passthrough_response()
 
     def _exchange_inbound(self, subject_token: str) -> Tuple[str, Optional[int]]:
         audience = f"//iam.googleapis.com/projects/{self.wif_project}/locations/global/workloadIdentityPools/{self.wif_pool_id}/providers/{self.wif_provider_id}"
@@ -115,7 +133,7 @@ class TokenExchangeCallout(callout_server.CalloutServer):
             "audience": audience,
         }
         
-        resp = requests.post("https://sts.googleapis.com/v1/token", json=payload, timeout=10.0)
+        resp = self.session.post("https://sts.googleapis.com/v1/token", json=payload, timeout=10.0)
         resp.raise_for_status()
         
         body = resp.json()
@@ -131,7 +149,7 @@ class TokenExchangeCallout(callout_server.CalloutServer):
         if self.outbound_client_id: data["client_id"] = self.outbound_client_id
         if self.outbound_client_secret: data["client_secret"] = self.outbound_client_secret
 
-        resp = requests.post(self.outbound_token_url, data=data, timeout=10.0)
+        resp = self.session.post(self.outbound_token_url, data=data, timeout=10.0)
         resp.raise_for_status()
         body = resp.json()
         expires_in = body.get("expires_in")
@@ -143,6 +161,9 @@ class TokenExchangeCallout(callout_server.CalloutServer):
         self._append_header(mutations, "authorization", f"Bearer {new_token}")
 
         if self.mode == "inbound":
+            email = None
+            sub = None
+            groups_str = None
             try:
                 # Signature verification is intentionally skipped: we only extract claims
                 # for downstream audit headers. The token was already validated by STS.
@@ -150,15 +171,34 @@ class TokenExchangeCallout(callout_server.CalloutServer):
                 email = decoded.get("email") or decoded.get("preferred_username")
                 sub = decoded.get("sub")
                 groups = decoded.get("groups")
-
-                if email: self._append_header(mutations, "x-goog-authenticated-user-email", email)
-                if sub: self._append_header(mutations, "x-goog-authenticated-user-id", sub)
                 if groups:
                     groups_str = ",".join(groups) if isinstance(groups, list) else str(groups)
-                    self._append_header(mutations, "x-original-user-groups", groups_str)
             except Exception as e:
                 logging.warning(f"Audit headers bypass. Token decode failed: {e}")
 
+            for header_name, claim_val in (
+                ("x-goog-authenticated-user-email", email),
+                ("x-goog-authenticated-user-id", sub),
+                ("x-original-user-groups", groups_str),
+            ):
+                if claim_val:
+                    self._append_header(mutations, header_name, claim_val)
+                else:
+                    mutations.remove_headers.append(header_name)
+
+        return resp
+
+    def _passthrough_response(self) -> service_pb2.ProcessingResponse:
+        resp = service_pb2.ProcessingResponse()
+        if self.mode == "inbound":
+            resp.request_headers.response.header_mutation.remove_headers.extend(_TRUSTED_INBOUND_HEADERS)
+        return resp
+
+    @staticmethod
+    def _deny_response(details: str) -> service_pb2.ProcessingResponse:
+        resp = service_pb2.ProcessingResponse()
+        resp.immediate_response.status.code = StatusCode.Forbidden
+        resp.immediate_response.details = details
         return resp
 
     @staticmethod
@@ -169,3 +209,9 @@ class TokenExchangeCallout(callout_server.CalloutServer):
                 append_action=HeaderValueOption.OVERWRITE_IF_EXISTS_OR_ADD
             )
         )
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    port = int(os.environ.get("PORT", 8080))
+    TokenExchangeCallout(disable_tls=True, plaintext_address=("0.0.0.0", port)).run()

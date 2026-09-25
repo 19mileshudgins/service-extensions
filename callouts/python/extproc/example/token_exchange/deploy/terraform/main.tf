@@ -49,9 +49,15 @@ resource "google_cloud_run_v2_service" "ext_proc_service" {
         value = var.outbound_token_url
       }
       env {
+        name  = "FAIL_CLOSED"
+        value = tostring(var.fail_closed)
+      }
+      env {
         name  = "OUTBOUND_CLIENT_ID"
         value = var.outbound_client_id
       }
+      # NOTE: For sample simplicity, the client secret is passed via a sensitive
+      # Terraform variable. For production deployments, store in Google Secret Manager.
       env {
         name  = "OUTBOUND_CLIENT_SECRET"
         value = var.outbound_client_secret
@@ -170,6 +176,9 @@ resource "google_compute_global_forwarding_rule" "verification_forwarding_rule" 
 # -----------------------------------------------------------------------------
 # IAM POLICIES: CLOUD RUN INVOKER ACCESS
 # -----------------------------------------------------------------------------
+# NOTE: Granting `roles/run.invoker` to `allUsers` is used here for sample
+# simplicity. For production environments, scope invocation according to your
+# organization's security policy.
 
 resource "google_cloud_run_v2_service_iam_member" "ext_proc_public" {
   project  = google_cloud_run_v2_service.ext_proc_service.project

@@ -41,6 +41,15 @@ variable "outbound_client_id" {
 }
 
 variable "outbound_client_secret" {
-  type    = string
-  default = ""
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "Client secret for outbound token exchange. For production deployments, prefer referencing a secret in Google Secret Manager."
 }
+
+variable "fail_closed" {
+  type        = bool
+  default     = false
+  description = "When true, the callout rejects requests with HTTP 403 if token exchange fails or credentials are missing/invalid."
+}
+
